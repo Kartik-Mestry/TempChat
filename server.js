@@ -86,8 +86,14 @@ function isRoomActive(room) {
     return true;
 }
 
-// Serve static assets
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static assets with no-cache headers to prevent stale CSS/JS
+app.use(express.static(path.join(__dirname, 'public'), {
+    etag: false,
+    maxAge: 0,
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+}));
 
 // Check if a room exists (strict against expired rooms)
 app.get('/api/room/:roomId', (req, res) => {

@@ -6,7 +6,7 @@
     <title>TempChat — Ephemeral & Private Disposable Rooms</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
@@ -17,7 +17,7 @@
 
         <!-- ================= LOBBY SCREEN ================= -->
         <main id="lobby-screen" class="screen active">
-            <div class="lobby-card glass">
+            <div class="lobby-card">
                 <header class="lobby-header">
                     <div class="logo-badge">
                         <span class="flame-icon">🔥</span>
@@ -121,7 +121,7 @@
         <!-- ================= CHAT SCREEN ================= -->
         <main id="chat-screen" class="screen">
             <!-- Top Navbar -->
-            <header class="chat-navbar glass">
+            <header class="chat-navbar">
                 <div class="nav-left">
                     <div class="nav-brand">
                         <span class="flame-icon">🔥</span>
@@ -171,7 +171,7 @@
                 <section class="chat-feed-area">
                     <div id="messages-container" class="messages-container">
                         <!-- Welcome Room Card -->
-                        <div class="room-welcome-card glass">
+                        <div class="room-welcome-card">
                             <div class="welcome-header">
                                 <span class="welcome-icon">🔒</span>
                                 <div>
@@ -193,7 +193,7 @@
                     </div>
 
                     <!-- Input Footer -->
-                    <footer class="chat-footer glass">
+                    <footer class="chat-footer">
                         <form id="chat-form" class="chat-input-form">
                             <!-- Hidden File Input -->
                             <input type="file" id="file-input" hidden style="display: none;" accept="image/*,.pdf,.txt,.doc,.docx,.zip">
@@ -214,7 +214,7 @@
                 </section>
 
                 <!-- Participants Sidebar -->
-                <aside id="participants-sidebar" class="participants-sidebar glass">
+                <aside id="participants-sidebar" class="participants-sidebar">
                     <div class="sidebar-header">
                         <h4>Participants (<span id="sidebar-count">1</span>)</h4>
                         <button type="button" class="close-sidebar-btn" id="close-sidebar-btn">
@@ -239,7 +239,7 @@
 
         <!-- ================= SHARE MODAL ================= -->
         <div id="share-modal" class="modal-overlay hidden">
-            <div class="modal-card glass">
+            <div class="modal-card">
                 <div class="modal-header">
                     <h3>Invite Participants</h3>
                     <button type="button" class="modal-close-btn" id="share-modal-close">
@@ -275,7 +275,7 @@
 
         <!-- ================= BURN CONFIRMATION MODAL ================= -->
         <div id="burn-modal" class="modal-overlay hidden">
-            <div class="modal-card glass burn-alert-card">
+            <div class="modal-card burn-alert-card">
                 <div class="modal-header">
                     <h3 class="danger-text">Burn This Room?</h3>
                     <button type="button" class="modal-close-btn" id="burn-modal-close">

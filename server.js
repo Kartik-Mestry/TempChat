@@ -140,7 +140,7 @@ io.on('connection', (socket) => {
             }
 
             const cleanName = (typeof payload.username === 'string' ? payload.username : 'Host').trim().slice(0, 24) || 'Host';
-            const safeColor = sanitizeColor(payload.avatarColor, '#f59e0b');
+            const safeColor = sanitizeColor(payload.avatarColor, '#ff6b35');
             const ttl = parseInt(payload.ttlMinutes, 10) || 60;
             const ttlMs = Math.min(Math.max(ttl, 5), 1440) * 60 * 1000;
             const roomId = generateRoomId();

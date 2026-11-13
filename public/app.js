@@ -161,10 +161,10 @@
 
     function getSelectedColor(container) {
         const active = container.querySelector('.color-circle.active');
-        return sanitizeColor(active ? active.dataset.color : '#f59e0b');
+        return sanitizeColor(active ? active.dataset.color : '#ff6b35');
     }
 
-    function sanitizeColor(color, fallback = '#f59e0b') {
+    function sanitizeColor(color, fallback = '#ff6b35') {
         if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) {
             return color.toLowerCase();
         }
@@ -304,7 +304,7 @@
 
             const avatar = document.createElement('div');
             avatar.className = 'p-avatar';
-            avatar.style.backgroundColor = sanitizeColor(p.avatarColor, '#f59e0b');
+            avatar.style.backgroundColor = sanitizeColor(p.avatarColor, '#ff6b35');
             avatar.textContent = (p.username || '?').slice(0, 2).toUpperCase();
 
             const info = document.createElement('div');
@@ -445,7 +445,7 @@
 
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
-        avatar.style.backgroundColor = sanitizeColor(msg.sender.avatarColor, '#f59e0b');
+        avatar.style.backgroundColor = sanitizeColor(msg.sender.avatarColor, '#ff6b35');
         avatar.textContent = (msg.sender.username || '?').slice(0, 2).toUpperCase();
 
         const bubbleWrapper = document.createElement('div');

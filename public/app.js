@@ -1,4 +1,4 @@
-// TempChat Client-Side Application
+// TempChat Client-Side Application (Hardened & Polished)
 (function () {
     'use strict';
 
@@ -14,6 +14,8 @@
     let isTyping = false;
     let soundEnabled = true;
     let qrCodeInstance = null;
+    let activeFileReader = null;
+    let fileReadRoomId = null;
 
     // DOM Elements - Screens
     const lobbyScreen = document.getElementById('lobby-screen');
@@ -82,7 +84,17 @@
 
     const toastContainer = document.getElementById('toast-container');
 
-    // Web Audio Synthesizer for gentle notification sounds (no external files needed)
+    // Connection lifecycle handling
+    socket.on('disconnect', () => {
+        showToast('Connection interrupted. Reconnecting...', 'error');
+        messageInput.disabled = true;
+    });
+
+    socket.on('connect', () => {
+        messageInput.disabled = false;
+    });
+
+    // Web Audio Synthesizer for gentle notification sounds
     let audioCtx = null;
     function playNotificationSound(type = 'message') {
         if (!soundEnabled) return;
@@ -117,7 +129,7 @@
                 osc.stop(now + 0.18);
             }
         } catch (e) {
-            // Audio context not allowed before user interaction
+            // Audio context requires user gesture
         }
     }
 
@@ -149,7 +161,14 @@
 
     function getSelectedColor(container) {
         const active = container.querySelector('.color-circle.active');
-        return active ? active.dataset.color : '#6366f1';
+        return sanitizeColor(active ? active.dataset.color : '#6366f1');
+    }
+
+    function sanitizeColor(color, fallback = '#6366f1') {
+        if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) {
+            return color.toLowerCase();
+        }
+        return fallback;
     }
 
     // Tab Navigation
@@ -188,7 +207,7 @@
         socket.emit('create_room', { username, avatarColor, ttlMinutes }, (response) => {
             if (response && response.success) {
                 enterChat(response.roomId, response.user, response.expiresAt, response.participants);
-                showToast(`Temporary room ${response.roomId} created!`, 'success');
+                showToast('Temporary room created!', 'success');
             } else {
                 showToast(response?.message || 'Error creating room', 'error');
             }
@@ -207,10 +226,10 @@
         socket.emit('join_room', { roomId, username, avatarColor }, (response) => {
             if (response && response.success) {
                 enterChat(response.roomId, response.user, response.expiresAt, response.participants);
-                showToast(`Joined room ${response.roomId}`, 'success');
+                showToast('Joined temporary room', 'success');
 
                 // Render existing session messages if any
-                if (response.messages && response.messages.length) {
+                if (response.messages && Array.isArray(response.messages)) {
                     response.messages.forEach(msg => appendMessage(msg));
                 }
             } else {
@@ -231,12 +250,10 @@
         displayRoomId.textContent = roomId;
         welcomeRoomId.textContent = roomId;
 
-        // Update URL bar cleanly without reload
-        const newUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+        const newUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
         window.history.replaceState({ room: roomId }, '', newUrl);
 
-        // Update Host-specific controls
-        if (currentUser.isHost) {
+        if (currentUser && currentUser.isHost) {
             burnRoomBtn.style.display = 'flex';
         } else {
             burnRoomBtn.style.display = 'none';
@@ -274,25 +291,47 @@
         expiryTimerId = setInterval(updateTimer, 1000);
     }
 
-    // Update Participants Sidebar and Badges
+    // Update Participants Sidebar Safely without HTML Injection
     function updateParticipantsUI(participants) {
-        participantsCountBadge.textContent = participants.length;
-        sidebarCount.textContent = participants.length;
+        const list = Array.isArray(participants) ? participants : [];
+        participantsCountBadge.textContent = list.length;
+        sidebarCount.textContent = list.length;
 
         participantsList.innerHTML = '';
-        participants.forEach(p => {
+        list.forEach(p => {
             const li = document.createElement('li');
             li.className = `participant-item ${p.id === currentUser?.id ? 'self' : ''}`;
 
-            const initials = p.username.slice(0, 2).toUpperCase();
-            li.innerHTML = `
-                <div class="p-avatar" style="background: ${p.avatarColor};">${initials}</div>
-                <div class="p-info">
-                    <span class="p-name">${escapeHtml(p.username)}</span>
-                    ${p.isHost ? '<span class="host-badge">HOST</span>' : ''}
-                    ${p.id === currentUser?.id ? '<span style="font-size:10px; color:var(--text-muted);">(You)</span>' : ''}
-                </div>
-            `;
+            const avatar = document.createElement('div');
+            avatar.className = 'p-avatar';
+            avatar.style.backgroundColor = sanitizeColor(p.avatarColor, '#6366f1');
+            avatar.textContent = (p.username || '?').slice(0, 2).toUpperCase();
+
+            const info = document.createElement('div');
+            info.className = 'p-info';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'p-name';
+            nameSpan.textContent = p.username || 'Guest';
+            info.appendChild(nameSpan);
+
+            if (p.isHost) {
+                const hostBadge = document.createElement('span');
+                hostBadge.className = 'host-badge';
+                hostBadge.textContent = 'HOST';
+                info.appendChild(hostBadge);
+            }
+
+            if (p.id === currentUser?.id) {
+                const youSpan = document.createElement('span');
+                youSpan.style.fontSize = '10px';
+                youSpan.style.color = 'var(--text-muted)';
+                youSpan.textContent = '(You)';
+                info.appendChild(youSpan);
+            }
+
+            li.appendChild(avatar);
+            li.appendChild(info);
             participantsList.appendChild(li);
         });
     }
@@ -316,7 +355,6 @@
         messageInput.style.height = 'auto';
         messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
 
-        // Typing indicator trigger
         if (!isTyping) {
             isTyping = true;
             socket.emit('typing', { isTyping: true });
@@ -332,11 +370,7 @@
         const text = messageInput.value.trim();
         if (!text) return;
 
-        socket.emit('send_message', { text }, (res) => {
-            if (res && res.success) {
-                // Done
-            }
-        });
+        socket.emit('send_message', { text });
 
         messageInput.value = '';
         messageInput.style.height = 'auto';
@@ -348,7 +382,7 @@
         }
     }
 
-    // File Attachment Handler
+    // File Attachment Handler bound to current room session
     attachFileBtn.addEventListener('click', () => {
         fileInput.click();
     });
@@ -363,8 +397,19 @@
             return;
         }
 
+        // Bind read to currently active room session
+        fileReadRoomId = currentRoomId;
         const reader = new FileReader();
+        activeFileReader = reader;
+
         reader.onload = function (e) {
+            // Discard if user left or switched rooms during the file read
+            if (!currentRoomId || fileReadRoomId !== currentRoomId) {
+                fileInput.value = '';
+                activeFileReader = null;
+                return;
+            }
+
             const base64Data = e.target.result;
             socket.emit('send_file', {
                 fileName: file.name,
@@ -377,57 +422,106 @@
                 }
             });
             fileInput.value = '';
+            activeFileReader = null;
         };
+
+        reader.onerror = function () {
+            showToast('Failed to read file', 'error');
+            activeFileReader = null;
+            fileInput.value = '';
+        };
+
         reader.readAsDataURL(file);
     });
 
-    // Append Message to UI
+    // Append Message to UI safely
     function appendMessage(msg) {
+        if (!msg || !msg.sender) return;
+
         const isSelf = msg.sender.id === currentUser?.id;
 
         const row = document.createElement('div');
         row.className = `message-row ${isSelf ? 'self' : ''}`;
 
-        const initials = (msg.sender.username || '?').slice(0, 2).toUpperCase();
-        const timeStr = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.style.backgroundColor = sanitizeColor(msg.sender.avatarColor, '#6366f1');
+        avatar.textContent = (msg.sender.username || '?').slice(0, 2).toUpperCase();
 
-        let contentHtml = '';
+        const bubbleWrapper = document.createElement('div');
+        bubbleWrapper.className = 'message-bubble-wrapper';
+
+        const meta = document.createElement('div');
+        meta.className = 'message-meta';
+
+        const senderSpan = document.createElement('span');
+        senderSpan.className = 'sender-name';
+        senderSpan.textContent = msg.sender.username || 'Guest';
+        meta.appendChild(senderSpan);
+
+        if (msg.sender.isHost) {
+            const hostBadge = document.createElement('span');
+            hostBadge.className = 'host-badge';
+            hostBadge.textContent = 'HOST';
+            meta.appendChild(hostBadge);
+        }
+
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'message-time';
+        timeSpan.textContent = new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        meta.appendChild(timeSpan);
+        bubbleWrapper.appendChild(meta);
+
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble';
+
         if (msg.type === 'text') {
-            contentHtml = `<div class="message-bubble">${linkify(escapeHtml(msg.text))}</div>`;
+            bubble.innerHTML = linkify(escapeHtml(msg.text));
         } else if (msg.type === 'file') {
-            if (msg.fileType.startsWith('image/')) {
-                contentHtml = `
-                    <div class="message-bubble" style="padding: 6px;">
-                        <img src="${msg.fileData}" alt="${escapeHtml(msg.fileName)}" class="chat-image-preview" onclick="window.previewImage('${msg.fileData}')">
-                    </div>
-                `;
+            const fileType = typeof msg.fileType === 'string' ? msg.fileType : '';
+            if (fileType.startsWith('image/')) {
+                bubble.style.padding = '6px';
+                const img = document.createElement('img');
+                img.className = 'chat-image-preview';
+                img.alt = msg.fileName || 'Image attachment';
+                if (typeof msg.fileData === 'string' && msg.fileData.startsWith('data:image/')) {
+                    img.src = msg.fileData;
+                }
+                img.addEventListener('click', () => {
+                    if (img.src) previewImage(img.src);
+                });
+                bubble.appendChild(img);
             } else {
-                const formattedSize = formatBytes(msg.fileSize);
-                contentHtml = `
-                    <div class="message-bubble">
-                        <a href="${msg.fileData}" download="${escapeHtml(msg.fileName)}" class="file-attachment-card">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="18"/><line x1="15" y1="15" x2="12" y2="18"/></svg>
-                            <div class="file-info">
-                                <span class="file-name">${escapeHtml(msg.fileName)}</span>
-                                <span class="file-size">${formattedSize} &bull; Click to download</span>
-                            </div>
-                        </a>
-                    </div>
-                `;
+                const link = document.createElement('a');
+                link.className = 'file-attachment-card';
+                if (typeof msg.fileData === 'string' && msg.fileData.startsWith('data:')) {
+                    link.href = msg.fileData;
+                }
+                link.download = msg.fileName || 'attachment';
+
+                link.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="18"/><line x1="15" y1="15" x2="12" y2="18"/></svg>`;
+
+                const fileInfo = document.createElement('div');
+                fileInfo.className = 'file-info';
+
+                const fileNameSpan = document.createElement('span');
+                fileNameSpan.className = 'file-name';
+                fileNameSpan.textContent = msg.fileName || 'Attachment';
+
+                const fileSizeSpan = document.createElement('span');
+                fileSizeSpan.className = 'file-size';
+                fileSizeSpan.textContent = `${formatBytes(msg.fileSize)} • Click to download`;
+
+                fileInfo.appendChild(fileNameSpan);
+                fileInfo.appendChild(fileSizeSpan);
+                link.appendChild(fileInfo);
+                bubble.appendChild(link);
             }
         }
 
-        row.innerHTML = `
-            <div class="message-avatar" style="background: ${msg.sender.avatarColor};">${initials}</div>
-            <div class="message-bubble-wrapper">
-                <div class="message-meta">
-                    <span class="sender-name">${escapeHtml(msg.sender.username)}</span>
-                    ${msg.sender.isHost ? '<span class="host-badge">HOST</span>' : ''}
-                    <span class="message-time">${timeStr}</span>
-                </div>
-                ${contentHtml}
-            </div>
-        `;
+        bubbleWrapper.appendChild(bubble);
+        row.appendChild(avatar);
+        row.appendChild(bubbleWrapper);
 
         messagesContainer.appendChild(row);
         scrollToBottom();
@@ -457,23 +551,23 @@
     });
 
     socket.on('user_joined', (data) => {
-        appendSystemMessage(data.message);
-        updateParticipantsUI(data.participants);
+        if (data.message) appendSystemMessage(data.message);
+        if (data.participants) updateParticipantsUI(data.participants);
     });
 
     socket.on('user_left', (data) => {
-        appendSystemMessage(data.message);
-        updateParticipantsUI(data.participants);
+        if (data.message) appendSystemMessage(data.message);
+        if (data.participants) updateParticipantsUI(data.participants);
     });
 
     socket.on('host_changed', (data) => {
-        if (data.newHost.id === currentUser?.id) {
+        if (data.newHost && data.newHost.id === currentUser?.id) {
             currentUser.isHost = true;
             burnRoomBtn.style.display = 'flex';
             showToast('You are now the room host!', 'info');
         }
-        appendSystemMessage(`${data.newHost.username} is now the host.`);
-        updateParticipantsUI(data.participants);
+        if (data.newHost) appendSystemMessage(`${data.newHost.username} is now the host.`);
+        if (data.participants) updateParticipantsUI(data.participants);
     });
 
     socket.on('user_typing', (data) => {
@@ -499,8 +593,20 @@
     // Leave Chat
     function leaveChatUI() {
         if (expiryTimerId) clearInterval(expiryTimerId);
+
+        if (activeFileReader) {
+            try { activeFileReader.abort(); } catch (e) {}
+            activeFileReader = null;
+        }
+        fileReadRoomId = null;
         currentRoomId = null;
         currentUser = null;
+
+        // Close all modal overlays owned by room session
+        lightboxModal.classList.add('hidden');
+        lightboxImg.src = '';
+        shareModal.classList.add('hidden');
+        burnModal.classList.add('hidden');
 
         // Clean query param
         window.history.replaceState({}, '', window.location.pathname);
@@ -545,12 +651,11 @@
 
     function openShareModal() {
         if (!currentRoomId) return;
-        const joinLink = `${window.location.origin}${window.location.pathname}?room=${currentRoomId}`;
+        const joinLink = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(currentRoomId)}`;
 
         shareRoomIdInput.value = currentRoomId;
         shareRoomLinkInput.value = joinLink;
 
-        // Generate QR code
         qrcodeBox.innerHTML = '';
         if (typeof QRCode !== 'undefined') {
             qrCodeInstance = new QRCode(qrcodeBox, {
@@ -589,7 +694,7 @@
 
     welcomeCopyBtn.addEventListener('click', () => {
         if (currentRoomId) {
-            const link = `${window.location.origin}${window.location.pathname}?room=${currentRoomId}`;
+            const link = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(currentRoomId)}`;
             copyToClipboard(link, 'Invite link copied!');
         }
     });
@@ -618,17 +723,21 @@
 
     // Lightbox for image preview
     window.previewImage = function (src) {
-        lightboxImg.src = src;
-        lightboxModal.classList.remove('hidden');
+        if (typeof src === 'string' && src.startsWith('data:image/')) {
+            lightboxImg.src = src;
+            lightboxModal.classList.remove('hidden');
+        }
     };
 
     lightboxClose.addEventListener('click', () => {
         lightboxModal.classList.add('hidden');
+        lightboxImg.src = '';
     });
 
     lightboxModal.addEventListener('click', (e) => {
         if (e.target === lightboxModal) {
             lightboxModal.classList.add('hidden');
+            lightboxImg.src = '';
         }
     });
 

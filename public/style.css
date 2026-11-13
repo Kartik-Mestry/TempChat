@@ -54,6 +54,10 @@ body {
     border: 1px solid var(--border-color);
 }
 
+.hidden {
+    display: none !important;
+}
+
 .app-wrapper {
     position: relative;
     width: 100vw;
@@ -83,7 +87,9 @@ body {
 #lobby-screen {
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: 24px 16px;
+    overflow-y: auto;
+    height: 100%;
 }
 
 .lobby-card {
@@ -1145,6 +1151,39 @@ input:checked + .slider:before { transform: translateX(18px); }
         display: none;
     }
     
+    .chat-navbar {
+        height: auto;
+        min-height: 60px;
+        padding: 8px 12px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .nav-left {
+        gap: 8px;
+        flex: 1 1 auto;
+    }
+
+    .nav-center {
+        order: 3;
+        width: 100%;
+        justify-content: center;
+        margin-top: 2px;
+    }
+
+    .nav-right {
+        gap: 6px;
+        flex: 0 0 auto;
+    }
+
+    .room-id-badge {
+        padding: 4px 8px;
+    }
+
+    .room-id-badge code {
+        font-size: 11px;
+    }
+
     .participants-sidebar {
         position: absolute;
         top: 0;

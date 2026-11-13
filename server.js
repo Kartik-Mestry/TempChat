@@ -134,7 +134,7 @@ io.on('connection', (socket) => {
             }
 
             const cleanName = (typeof payload.username === 'string' ? payload.username : 'Host').trim().slice(0, 24) || 'Host';
-            const safeColor = sanitizeColor(payload.avatarColor, '#6366f1');
+            const safeColor = sanitizeColor(payload.avatarColor, '#f59e0b');
             const ttl = parseInt(payload.ttlMinutes, 10) || 60;
             const ttlMs = Math.min(Math.max(ttl, 5), 1440) * 60 * 1000;
             const roomId = generateRoomId();
@@ -197,7 +197,7 @@ io.on('connection', (socket) => {
 
             const cleanRoomId = (typeof payload.roomId === 'string' ? payload.roomId : '').trim().toLowerCase();
             const cleanName = (typeof payload.username === 'string' ? payload.username : 'Guest').trim().slice(0, 24) || 'Guest';
-            const safeColor = sanitizeColor(payload.avatarColor, '#10b981');
+            const safeColor = sanitizeColor(payload.avatarColor, '#ffffff');
 
             const room = rooms.get(cleanRoomId);
             if (!room || !isRoomActive(room)) {

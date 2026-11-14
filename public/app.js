@@ -17,6 +17,15 @@
     let activeFileReader = null;
     let fileReadRoomId = null;
 
+    // Reply & Voice Note state
+    let activeReply = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let audioStream = null;
+    let recordingTimerId = null;
+    let recordingSeconds = 0;
+    let currentlyPlayingAudio = null;
+
     // DOM Elements - Screens
     const lobbyScreen = document.getElementById('lobby-screen');
     const chatScreen = document.getElementById('chat-screen');
@@ -56,6 +65,17 @@
     const messageInput = document.getElementById('message-input');
     const attachFileBtn = document.getElementById('attach-file-btn');
     const fileInput = document.getElementById('file-input');
+    const voiceRecordBtn = document.getElementById('voice-record-btn');
+    const voiceRecordingBar = document.getElementById('voice-recording-bar');
+    const recordingTimer = document.getElementById('recording-timer');
+    const cancelVoiceBtn = document.getElementById('cancel-voice-btn');
+    const sendVoiceBtn = document.getElementById('send-voice-btn');
+
+    // DOM Elements - Reply Bar
+    const replyPreviewBar = document.getElementById('reply-preview-bar');
+    const replyToUser = document.getElementById('reply-to-user');
+    const replyToText = document.getElementById('reply-to-text');
+    const cancelReplyBtn = document.getElementById('cancel-reply-btn');
 
     // DOM Elements - Sidebar
     const participantsSidebar = document.getElementById('participants-sidebar');
@@ -366,12 +386,25 @@
         }, 1500);
     });
 
+    function clearReply() {
+        activeReply = null;
+        replyPreviewBar.classList.add('hidden');
+        replyToUser.textContent = '';
+        replyToText.textContent = '';
+    }
+
+    cancelReplyBtn.addEventListener('click', clearReply);
+
     function sendCurrentMessage() {
         const text = messageInput.value.trim();
         if (!text) return;
 
-        socket.emit('send_message', { text });
+        socket.emit('send_message', {
+            text: text,
+            replyTo: activeReply
+        });
 
+        clearReply();
         messageInput.value = '';
         messageInput.style.height = 'auto';
 
@@ -379,6 +412,247 @@
             isTyping = false;
             socket.emit('typing', { isTyping: false });
             clearTimeout(typingTimeoutId);
+        }
+    }
+
+    // Voice Recording implementation (Push-to-Talk / One-tap)
+    async function startVoiceRecording() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            showToast('Voice recording is not supported in this browser.', 'error');
+            return;
+        }
+
+        try {
+            audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioChunks = [];
+            recordingSeconds = 0;
+
+            let mimeType = 'audio/webm';
+            if (window.MediaRecorder) {
+                if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                    mimeType = 'audio/webm;codecs=opus';
+                } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+                    mimeType = 'audio/ogg;codecs=opus';
+                } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    mimeType = 'audio/mp4';
+                }
+            }
+
+            mediaRecorder = new MediaRecorder(audioStream, { mimeType: mimeType });
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) {
+                    audioChunks.push(e.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                if (audioChunks.length === 0) return;
+                const audioBlob = new Blob(audioChunks, { type: mimeType });
+                const finalDuration = recordingSeconds || 1;
+
+                const reader = new FileReader();
+                reader.onload = function () {
+                    const base64Audio = reader.result;
+                    socket.emit('send_voice', {
+                        audioData: base64Audio,
+                        duration: finalDuration,
+                        replyTo: activeReply
+                    }, (res) => {
+                        if (res && !res.success) {
+                            showToast(res.message || 'Failed to send voice note', 'error');
+                        }
+                    });
+                    clearReply();
+                };
+                reader.readAsDataURL(audioBlob);
+            };
+
+            mediaRecorder.start(200);
+
+            voiceRecordingBar.classList.remove('hidden');
+            recordingTimer.textContent = '0:00 / 0:30';
+
+            recordingTimerId = setInterval(() => {
+                recordingSeconds++;
+                const mins = Math.floor(recordingSeconds / 60);
+                const secs = String(recordingSeconds % 60).padStart(2, '0');
+                recordingTimer.textContent = `${mins}:${secs} / 0:30`;
+
+                if (recordingSeconds >= 30) {
+                    stopAndSendVoiceRecording();
+                }
+            }, 1000);
+
+        } catch (err) {
+            console.error('Microphone error:', err);
+            showToast('Microphone access denied or unavailable.', 'error');
+            cancelVoiceRecording();
+        }
+    }
+
+    function stopAndSendVoiceRecording() {
+        if (recordingTimerId) clearInterval(recordingTimerId);
+        voiceRecordingBar.classList.add('hidden');
+
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+        }
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+            audioStream = null;
+        }
+    }
+
+    function cancelVoiceRecording() {
+        if (recordingTimerId) clearInterval(recordingTimerId);
+        voiceRecordingBar.classList.add('hidden');
+        audioChunks = [];
+        recordingSeconds = 0;
+
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.onstop = null;
+            mediaRecorder.stop();
+        }
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+            audioStream = null;
+        }
+    }
+
+    voiceRecordBtn.addEventListener('click', () => {
+        if (voiceRecordingBar.classList.contains('hidden')) {
+            startVoiceRecording();
+        } else {
+            stopAndSendVoiceRecording();
+        }
+    });
+
+    cancelVoiceBtn.addEventListener('click', cancelVoiceRecording);
+    sendVoiceBtn.addEventListener('click', stopAndSendVoiceRecording);
+
+    // Audio Player helper for inline voice notes
+    function createVoicePlayer(audioSrc, totalDuration) {
+        const playerWrapper = document.createElement('div');
+        playerWrapper.className = 'voice-player';
+
+        const playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'voice-play-btn';
+        playBtn.title = 'Play Voice Note';
+        playBtn.innerHTML = `
+            <svg class="play-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <svg class="pause-icon hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        `;
+
+        const waveContainer = document.createElement('div');
+        waveContainer.className = 'voice-wave-container';
+
+        const progressTrack = document.createElement('div');
+        progressTrack.className = 'voice-progress-track';
+
+        const progressFill = document.createElement('div');
+        progressFill.className = 'voice-progress-fill';
+        progressTrack.appendChild(progressFill);
+
+        const durationSpan = document.createElement('span');
+        durationSpan.className = 'voice-duration';
+        const totalSecs = Math.max(1, Math.round(totalDuration || 0));
+        const totalMin = Math.floor(totalSecs / 60);
+        const totalSecStr = String(totalSecs % 60).padStart(2, '0');
+        durationSpan.textContent = `0:00 / ${totalMin}:${totalSecStr}`;
+
+        waveContainer.appendChild(progressTrack);
+        waveContainer.appendChild(durationSpan);
+
+        playerWrapper.appendChild(playBtn);
+        playerWrapper.appendChild(waveContainer);
+
+        let audio = null;
+        const playIcon = playBtn.querySelector('.play-icon');
+        const pauseIcon = playBtn.querySelector('.pause-icon');
+
+        function resetUI() {
+            playIcon.classList.remove('hidden');
+            pauseIcon.classList.add('hidden');
+            progressFill.style.width = '0%';
+            durationSpan.textContent = `0:00 / ${totalMin}:${totalSecStr}`;
+        }
+
+        playBtn.addEventListener('click', () => {
+            if (!audio) {
+                audio = new Audio(audioSrc);
+
+                audio.addEventListener('timeupdate', () => {
+                    if (!audio.duration) return;
+                    const percent = (audio.currentTime / audio.duration) * 100;
+                    progressFill.style.width = `${percent}%`;
+
+                    const curSecs = Math.floor(audio.currentTime);
+                    const curMin = Math.floor(curSecs / 60);
+                    const curSecStr = String(curSecs % 60).padStart(2, '0');
+                    durationSpan.textContent = `${curMin}:${curSecStr} / ${totalMin}:${totalSecStr}`;
+                });
+
+                audio.addEventListener('ended', () => {
+                    resetUI();
+                    currentlyPlayingAudio = null;
+                });
+            }
+
+            if (audio.paused) {
+                if (currentlyPlayingAudio && currentlyPlayingAudio !== audio) {
+                    currentlyPlayingAudio.pause();
+                    currentlyPlayingAudio.currentTime = 0;
+                }
+                currentlyPlayingAudio = audio;
+                audio.play().then(() => {
+                    playIcon.classList.add('hidden');
+                    pauseIcon.classList.remove('hidden');
+                }).catch(e => console.error('Audio play error:', e));
+            } else {
+                audio.pause();
+                playIcon.classList.remove('hidden');
+                pauseIcon.classList.add('hidden');
+            }
+        });
+
+        progressTrack.addEventListener('click', (e) => {
+            if (!audio || !audio.duration) return;
+            const rect = progressTrack.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const newFraction = Math.max(0, Math.min(1, clickX / rect.width));
+            audio.currentTime = newFraction * audio.duration;
+        });
+
+        return playerWrapper;
+    }
+
+    // Reactions Tray Renderer
+    function renderReactionsTray(trayEl, reactions, messageId) {
+        trayEl.innerHTML = '';
+        if (!reactions || typeof reactions !== 'object') return;
+
+        let hasAny = false;
+        for (const [emoji, users] of Object.entries(reactions)) {
+            if (!Array.isArray(users) || users.length === 0) continue;
+            hasAny = true;
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            const isUserReacted = users.includes(currentUser?.username);
+            pill.className = `reaction-pill ${isUserReacted ? 'active' : ''}`;
+            pill.innerHTML = `<span class="emoji-symbol">${emoji}</span> <span class="reaction-count">${users.length}</span>`;
+            pill.title = users.join(', ');
+            pill.addEventListener('click', () => {
+                socket.emit('toggle_reaction', { messageId, emoji });
+            });
+            trayEl.appendChild(pill);
+        }
+
+        if (hasAny) {
+            trayEl.classList.remove('hidden');
+        } else {
+            trayEl.classList.add('hidden');
         }
     }
 
@@ -415,12 +689,14 @@
                 fileName: file.name,
                 fileType: file.type,
                 fileData: base64Data,
-                fileSize: file.size
+                fileSize: file.size,
+                replyTo: activeReply
             }, (res) => {
                 if (res && !res.success) {
                     showToast(res.message || 'File upload failed', 'error');
                 }
             });
+            clearReply();
             fileInput.value = '';
             activeFileReader = null;
         };
@@ -442,6 +718,8 @@
 
         const row = document.createElement('div');
         row.className = `message-row ${isSelf ? 'self' : ''}`;
+        row.dataset.msgId = msg.id;
+        row.id = `msg-${msg.id}`;
 
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
@@ -475,8 +753,37 @@
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
 
+        // Render Quoted Reply if message was sent as a reply
+        if (msg.replyTo && msg.replyTo.senderName) {
+            const quoteBox = document.createElement('div');
+            quoteBox.className = 'message-quote-box';
+            quoteBox.title = 'Click to jump to original message';
+            quoteBox.innerHTML = `
+                <div class="quote-bar"></div>
+                <div class="quote-content">
+                    <span class="quote-author">${escapeHtml(msg.replyTo.senderName)}</span>
+                    <span class="quote-snippet">${escapeHtml(msg.replyTo.text)}</span>
+                </div>
+            `;
+            quoteBox.addEventListener('click', () => {
+                const target = document.getElementById(`msg-${msg.replyTo.id}`);
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    target.classList.add('highlight-flash');
+                    setTimeout(() => target.classList.remove('highlight-flash'), 1600);
+                }
+            });
+            bubble.appendChild(quoteBox);
+        }
+
         if (msg.type === 'text') {
-            bubble.innerHTML = linkify(escapeHtml(msg.text));
+            const textDiv = document.createElement('div');
+            textDiv.className = 'message-text-content';
+            textDiv.innerHTML = linkify(escapeHtml(msg.text));
+            bubble.appendChild(textDiv);
+        } else if (msg.type === 'voice') {
+            const voicePlayer = createVoicePlayer(msg.audioData, msg.duration);
+            bubble.appendChild(voicePlayer);
         } else if (msg.type === 'file') {
             const fileType = typeof msg.fileType === 'string' ? msg.fileType : '';
             if (fileType.startsWith('image/')) {
@@ -520,6 +827,56 @@
         }
 
         bubbleWrapper.appendChild(bubble);
+
+        // Action Toolbar (Reactions & Reply)
+        const actionToolbar = document.createElement('div');
+        actionToolbar.className = 'message-action-toolbar';
+
+        const quickReactions = document.createElement('div');
+        quickReactions.className = 'quick-reactions-group';
+
+        ['🔥', '👍', '❤️', '😂'].forEach(emoji => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'quick-reaction-btn';
+            btn.textContent = emoji;
+            btn.title = `React ${emoji}`;
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                socket.emit('toggle_reaction', { messageId: msg.id, emoji });
+            });
+            quickReactions.appendChild(btn);
+        });
+        actionToolbar.appendChild(quickReactions);
+
+        const replyBtn = document.createElement('button');
+        replyBtn.type = 'button';
+        replyBtn.className = 'action-reply-btn';
+        replyBtn.title = 'Reply to this message';
+        replyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`;
+        replyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            let snippet = msg.text || (msg.type === 'voice' ? '🎙️ Voice note' : (msg.fileName ? `📎 ${msg.fileName}` : 'Message'));
+            activeReply = {
+                id: msg.id,
+                senderName: msg.sender.username,
+                text: snippet.slice(0, 100)
+            };
+            replyToUser.textContent = msg.sender.username;
+            replyToText.textContent = snippet.slice(0, 80);
+            replyPreviewBar.classList.remove('hidden');
+            messageInput.focus();
+        });
+        actionToolbar.appendChild(replyBtn);
+
+        bubbleWrapper.appendChild(actionToolbar);
+
+        // Reactions Tray
+        const reactionsTray = document.createElement('div');
+        reactionsTray.className = 'message-reactions-tray hidden';
+        renderReactionsTray(reactionsTray, msg.reactions, msg.id);
+        bubbleWrapper.appendChild(reactionsTray);
+
         row.appendChild(avatar);
         row.appendChild(bubbleWrapper);
 
@@ -580,6 +937,17 @@
         }
     });
 
+    socket.on('reaction_updated', (data) => {
+        if (!data || !data.messageId) return;
+        const row = document.getElementById(`msg-${data.messageId}`);
+        if (row) {
+            const tray = row.querySelector('.message-reactions-tray');
+            if (tray) {
+                renderReactionsTray(tray, data.reactions, data.messageId);
+            }
+        }
+    });
+
     socket.on('room_burned', (data) => {
         showToast(data.message || 'Room burned by host', 'error');
         leaveChatUI();
@@ -593,6 +961,17 @@
     // Leave Chat
     function leaveChatUI() {
         if (expiryTimerId) clearInterval(expiryTimerId);
+
+        cancelVoiceRecording();
+        clearReply();
+
+        if (currentlyPlayingAudio) {
+            try {
+                currentlyPlayingAudio.pause();
+                currentlyPlayingAudio.currentTime = 0;
+            } catch (e) {}
+            currentlyPlayingAudio = null;
+        }
 
         if (activeFileReader) {
             try { activeFileReader.abort(); } catch (e) {}

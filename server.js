@@ -280,6 +280,15 @@ io.on('connection', (socket) => {
             return safeAck(callback, { success: false, message: 'Empty message' });
         }
 
+        let safeReplyTo = null;
+        if (payload.replyTo && typeof payload.replyTo === 'object') {
+            safeReplyTo = {
+                id: String(payload.replyTo.id || '').slice(0, 100),
+                senderName: escapeHtml(String(payload.replyTo.senderName || '')).slice(0, 24),
+                text: escapeHtml(String(payload.replyTo.text || '')).slice(0, 120)
+            };
+        }
+
         const messageData = {
             id: crypto.randomUUID(),
             type: 'text',
@@ -290,6 +299,8 @@ io.on('connection', (socket) => {
                 isHost: currentUser.isHost
             },
             text: safeText,
+            replyTo: safeReplyTo,
+            reactions: {},
             timestamp: Date.now()
         };
 
@@ -299,11 +310,127 @@ io.on('connection', (socket) => {
             const evicted = room.messages.shift();
             if (evicted.type === 'file' && evicted.fileData) {
                 room.attachmentBytes = Math.max(0, room.attachmentBytes - (evicted.fileSize || 0));
+            } else if (evicted.type === 'voice' && evicted.audioData) {
+                room.attachmentBytes = Math.max(0, room.attachmentBytes - (evicted.audioSize || 0));
             }
         }
 
         io.to(currentRoomId).emit('new_message', messageData);
         safeAck(callback, { success: true, messageId: messageData.id });
+    });
+
+    // Send Voice Note (Push-to-Talk)
+    socket.on('send_voice', (payload, callback) => {
+        if (!payload || typeof payload !== 'object') {
+            return safeAck(callback, { success: false, message: 'Invalid payload' });
+        }
+
+        if (!currentRoomId || !currentUser) {
+            return safeAck(callback, { success: false, message: 'Not in a room' });
+        }
+
+        const room = rooms.get(currentRoomId);
+        if (!room || !isRoomActive(room)) {
+            return safeAck(callback, { success: false, message: 'Room does not exist or expired' });
+        }
+
+        const audioData = typeof payload.audioData === 'string' ? payload.audioData : '';
+        if (!audioData.startsWith('data:audio/') || !audioData.includes(';base64,')) {
+            return safeAck(callback, { success: false, message: 'Invalid audio format' });
+        }
+
+        const audioSize = Math.round(audioData.length * 0.75);
+        if (audioSize <= 0 || audioSize > 2 * 1024 * 1024) {
+            return safeAck(callback, { success: false, message: 'Audio must be under 2MB' });
+        }
+
+        const duration = Math.min(Math.max(parseFloat(payload.duration) || 0, 0.5), 35);
+
+        let safeReplyTo = null;
+        if (payload.replyTo && typeof payload.replyTo === 'object') {
+            safeReplyTo = {
+                id: String(payload.replyTo.id || '').slice(0, 100),
+                senderName: escapeHtml(String(payload.replyTo.senderName || '')).slice(0, 24),
+                text: escapeHtml(String(payload.replyTo.text || '')).slice(0, 120)
+            };
+        }
+
+        while (room.attachmentBytes + audioSize > MAX_ROOM_ATTACHMENT_BYTES && room.messages.length > 0) {
+            const oldestIdx = room.messages.findIndex(m => (m.type === 'file' && m.fileData) || (m.type === 'voice' && m.audioData));
+            if (oldestIdx === -1) break;
+            const oldest = room.messages[oldestIdx];
+            const freed = oldest.fileSize || oldest.audioSize || 0;
+            room.attachmentBytes = Math.max(0, room.attachmentBytes - freed);
+            room.messages.splice(oldestIdx, 1);
+        }
+
+        const messageData = {
+            id: crypto.randomUUID(),
+            type: 'voice',
+            sender: {
+                id: currentUser.id,
+                username: currentUser.username,
+                avatarColor: currentUser.avatarColor,
+                isHost: currentUser.isHost
+            },
+            audioData: audioData,
+            duration: duration,
+            audioSize: audioSize,
+            replyTo: safeReplyTo,
+            reactions: {},
+            timestamp: Date.now()
+        };
+
+        room.attachmentBytes += audioSize;
+        room.messages.push(messageData);
+        if (room.messages.length > 100) {
+            const evicted = room.messages.shift();
+            if (evicted.type === 'file' && evicted.fileData) {
+                room.attachmentBytes = Math.max(0, room.attachmentBytes - (evicted.fileSize || 0));
+            } else if (evicted.type === 'voice' && evicted.audioData) {
+                room.attachmentBytes = Math.max(0, room.attachmentBytes - (evicted.audioSize || 0));
+            }
+        }
+
+        io.to(currentRoomId).emit('new_message', messageData);
+        safeAck(callback, { success: true, messageId: messageData.id });
+    });
+
+    // Toggle Reaction on a message
+    const ALLOWED_EMOJIS = ['🔥', '👍', '❤️', '😂'];
+    socket.on('toggle_reaction', (payload, callback) => {
+        if (!payload || typeof payload !== 'object' || !currentRoomId || !currentUser) return;
+        const room = rooms.get(currentRoomId);
+        if (!room || !isRoomActive(room)) return;
+
+        const messageId = String(payload.messageId || '');
+        const emoji = String(payload.emoji || '');
+        if (!ALLOWED_EMOJIS.includes(emoji)) return;
+
+        const targetMsg = room.messages.find(m => m.id === messageId);
+        if (!targetMsg) return;
+
+        if (!targetMsg.reactions) targetMsg.reactions = {};
+        if (!Array.isArray(targetMsg.reactions[emoji])) {
+            targetMsg.reactions[emoji] = [];
+        }
+
+        const userIdx = targetMsg.reactions[emoji].indexOf(currentUser.username);
+        if (userIdx > -1) {
+            targetMsg.reactions[emoji].splice(userIdx, 1);
+            if (targetMsg.reactions[emoji].length === 0) {
+                delete targetMsg.reactions[emoji];
+            }
+        } else {
+            targetMsg.reactions[emoji].push(currentUser.username);
+        }
+
+        io.to(currentRoomId).emit('reaction_updated', {
+            messageId: messageId,
+            reactions: targetMsg.reactions
+        });
+
+        safeAck(callback, { success: true, reactions: targetMsg.reactions });
     });
 
     // Send File / Image
@@ -348,6 +475,15 @@ io.on('connection', (socket) => {
             room.messages.splice(oldestFileIdx, 1);
         }
 
+        let safeReplyTo = null;
+        if (payload.replyTo && typeof payload.replyTo === 'object') {
+            safeReplyTo = {
+                id: String(payload.replyTo.id || '').slice(0, 100),
+                senderName: escapeHtml(String(payload.replyTo.senderName || '')).slice(0, 24),
+                text: escapeHtml(String(payload.replyTo.text || '')).slice(0, 120)
+            };
+        }
+
         const messageData = {
             id: crypto.randomUUID(),
             type: 'file',
@@ -361,6 +497,8 @@ io.on('connection', (socket) => {
             fileType: safeFileType,
             fileData: fileData,
             fileSize: fileSize,
+            replyTo: safeReplyTo,
+            reactions: {},
             timestamp: Date.now()
         };
 
